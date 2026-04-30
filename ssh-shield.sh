@@ -52,7 +52,7 @@ ask() {
     [[ -n "$default" ]] && display_default=" ${DIM}[${default}]${NC}"
     echo -ne "  ${BOLD}${prompt}${NC}${display_default}: "
     local answer
-    read -r answer
+    read -r answer < /dev/tty
     [[ -z "$answer" ]] && answer="$default"
     eval "$var=\"\$answer\""
 }
@@ -62,7 +62,7 @@ ask_yn() {
     [[ "$default" == "y" ]] && display_default=" ${DIM}[Y/n]${NC}" || display_default=" ${DIM}[y/N]${NC}"
     echo -ne "  ${BOLD}${prompt}${NC}${display_default}: "
     local answer
-    read -r answer
+    read -r answer < /dev/tty
     [[ -z "$answer" ]] && answer="$default"
     case "$answer" in y|Y|yes|YES) eval "$var=\"y\"" ;; *) eval "$var=\"n\"" ;; esac
 }
