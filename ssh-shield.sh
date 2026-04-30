@@ -7,10 +7,10 @@ set -euo pipefail
 
 BARK_API="https://api.day.app"
 SSH_KEY_PATH="/root/.ssh/id_ed25519"
-HOSTNAME=$(hostname)
 
 # ─── 配置变量（交互填写） ───
 CFG_BARK_KEY=""
+CFG_SERVER_NAME="$HOSTNAME"
 CFG_TRUSTED_IP=""
 CFG_MAX_RETRY=3
 CFG_FIND_TIME=600
@@ -33,7 +33,9 @@ step()  { echo -e "\n${CYAN}━━━ $1 ━━━${NC}"; }
 
 format_seconds() {
     local s=$1
-    if (( s >= 86400 )); then
+    if (( s < 0 )); then
+        echo "永久"
+    elif (( s >= 86400 )); then
         echo "$((s / 86400))天"
     elif (( s >= 3600 )); then
         echo "$((s / 3600))小时"
@@ -103,6 +105,8 @@ else
     fail "Bark 通知不可达 (HTTP ${HTTP_CODE})，请检查 Key"
 fi
 
+ask "通知标题中的服务器名称" "$HOSTNAME" CFG_SERVER_NAME
+
 ask "可信 IP 白名单（留空跳过）" "" CFG_TRUSTED_IP
 
 # ─── fail2ban 配置 ───
@@ -121,7 +125,7 @@ CFG_FIND_TIME=$((CFG_FIND_TIME + 0)) 2>/dev/null || CFG_FIND_TIME=600
 
 echo ""
 echo -e "  ${DIM}封禁时长：触发封禁后 IP 被禁止访问的时间${NC}"
-echo -e "  ${DIM}常用值：3600(1小时) 86400(1天) 604800(7天)${NC}"
+echo -e "  ${DIM}常用值：3600(1小时) 86400(1天) 604800(7天) -1(永久封禁)${NC}"
 ask "封禁时长/秒 (bantime)" "86400" CFG_BAN_TIME
 CFG_BAN_TIME=$((CFG_BAN_TIME + 0)) 2>/dev/null || CFG_BAN_TIME=86400
 
@@ -143,6 +147,7 @@ echo ""
 echo -e "${BOLD}─────────── 配置确认 ───────────${NC}"
 echo ""
 echo -e "  Bark Key:       ${GREEN}${CFG_BARK_KEY}${NC}"
+echo -e "  服务器名称:     ${GREEN}${CFG_SERVER_NAME}${NC}"
 if [[ -n "$CFG_TRUSTED_IP" ]]; then
     echo -e "  可信 IP:        ${GREEN}${CFG_TRUSTED_IP}${NC}"
 else
@@ -150,7 +155,7 @@ else
 fi
 echo -e "  最大失败次数:   ${GREEN}${CFG_MAX_RETRY} 次${NC}"
 echo -e "  检测时间窗口:   ${GREEN}$(format_seconds $CFG_FIND_TIME) (${CFG_FIND_TIME}s)${NC}"
-echo -e "  封禁时长:       ${GREEN}$(format_seconds $CFG_BAN_TIME) (${CFG_BAN_TIME}s)${NC}"
+echo -e "  封禁时长:       ${GREEN}$(format_seconds $CFG_BAN_TIME)$([ $CFG_BAN_TIME -ge 0 ] && echo " (${CFG_BAN_TIME}s)")${NC}"
 echo -e "  UFW 防火墙:    $([ "$CFG_ENABLE_UFW" == "y" ] && echo -e "${GREEN}启用${NC}" || echo -e "${YELLOW}跳过${NC}")"
 echo ""
 
@@ -185,12 +190,12 @@ IP="\$2"
 PORT="\$3"
 ATTEMPTS="\$4"
 JAIL="\$5"
-HOSTNAME=$(hostname)
+SERVER_NAME="${CFG_SERVER_NAME}"
 DATETIME=\$(date '+%Y-%m-%d %H:%M:%S %Z')
 
 case "\$ACTION" in
   ban)
-    TITLE="🚨 SSH攻击封禁 [\${HOSTNAME}]"
+    TITLE="🚨 SSH攻击封禁 [\${SERVER_NAME}]"
     BODY="攻击IP: \${IP}
 攻击端口: \${PORT}
 尝试次数: \${ATTEMPTS}
@@ -199,13 +204,13 @@ case "\$ACTION" in
 封禁时长: $(format_seconds $CFG_BAN_TIME)"
     ;;
   unban)
-    TITLE="🔓 IP解封通知 [\${HOSTNAME}]"
+    TITLE="🔓 IP解封通知 [\${SERVER_NAME}]"
     BODY="解封IP: \${IP}
 触发规则: \${JAIL}
 解封时间: \${DATETIME}"
     ;;
   *)
-    TITLE="⚠️ 安全告警 [\${HOSTNAME}]"
+    TITLE="⚠️ 安全告警 [\${SERVER_NAME}]"
     BODY="时间: \${DATETIME}
 详情: \${ACTION}"
     ;;
@@ -270,7 +275,7 @@ step "5/9 生成 SSH 密钥"
 if [[ -f "$SSH_KEY_PATH" ]]; then
     warn "SSH 密钥已存在，跳过生成"
 else
-    ssh-keygen -t ed25519 -f "$SSH_KEY_PATH" -N "" -C "root@${HOSTNAME}" -q
+    ssh-keygen -t ed25519 -f "$SSH_KEY_PATH" -N "" -C "root@${SERVER_NAME}" -q
     cat "${SSH_KEY_PATH}.pub" >> /root/.ssh/authorized_keys
     chmod 600 /root/.ssh/authorized_keys
     info "Ed25519 密钥对已生成"
@@ -320,7 +325,7 @@ info "fail2ban 运行中"
 
 # ─── 9. 发送部署完成通知 ───
 step "9/9 发送部署完成通知"
-curl -s -o /dev/null "${BARK_API}/${CFG_BARK_KEY}/✅部署完成/SSH-Shield已成功部署到${HOSTNAME}" || true
+curl -s -o /dev/null "${BARK_API}/${CFG_BARK_KEY}/✅部署完成/SSH-Shield已成功部署到${SERVER_NAME}" || true
 info "完成通知已发送"
 
 # ═══════════════════════════════════════════════════════════

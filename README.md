@@ -33,12 +33,13 @@ sudo ./ssh-shield.sh
 ```
 ▶ Bark 通知配置
   Bark Key（从 Bark App 获取）: xxxxxx
+  通知标题中的服务器名称 [vmi3104264]: 我的生产服务器
   可信 IP 白名单（留空跳过）: 1.2.3.4
 
 ▶ fail2ban 防护参数
   最大失败次数 (maxretry) [3]: 3
   检测时间/秒 (findtime) [600]: 600
-  封禁时长/秒 (bantime) [86400]: 86400
+  封禁时长/秒 (bantime) [86400]: -1   ← -1 为永久封禁
 
 ▶ UFW 防火墙
   启用 UFW 防火墙 [Y/n]: y
