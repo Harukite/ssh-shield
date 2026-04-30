@@ -1,11 +1,11 @@
 # SSH Shield
 
-一键部署 SSH 防暴力破解 + Bark 实时攻击通知。
+一键部署 SSH 防暴力破解 + 多渠道实时攻击通知。
 
 ## 功能
 
 - fail2ban 自动封禁攻击 IP
-- Bark 推送通知（攻击IP、端口、次数、时间）
+- **多渠道通知** — Bark (iOS)、飞书 (Webhook)，可同时启用
 - SSH 密钥认证（Ed25519），自动禁用密码登录
 - SSH 安全加固（MaxAuthTries、LoginGraceTime、MaxStartups）
 - UFW 防火墙（仅开放 SSH）
@@ -31,8 +31,15 @@ sudo ./ssh-shield.sh
 运行后会逐步引导配置：
 
 ```
-▶ Bark 通知配置
+▶ Bark 通知（iOS 推送）
+  启用 Bark 通知？ [Y/n]: y
   Bark Key（从 Bark App 获取）: xxxxxx
+
+▶ 飞书通知（Webhook 机器人）
+  启用飞书通知？ [y/N]: y
+  飞书 Webhook URL: https://open.feishu.cn/open-apis/bot/v2/hook/xxx
+
+▶ 通用配置
   通知标题中的服务器名称 [vmi3104264]: 我的生产服务器
   可信 IP 白名单（留空跳过）: 1.2.3.4
 
@@ -75,6 +82,13 @@ ssh -i ~/ssh-shield-key root@<服务器IP>
 | 🚨 攻击封禁 | IP 被 fail2ban 封禁 |
 | 🔓 IP 解封 | 封禁到期解封 |
 | ⚠️ 安全告警 | 其他安全事件 |
+
+### 支持的通知渠道
+
+| 渠道 | 说明 |
+|------|------|
+| [Bark](https://github.com/Finb/Bark) | iOS 推送通知 |
+| 飞书 Webhook | 群机器人卡片消息 |
 
 ## 系统要求
 
