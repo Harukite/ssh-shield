@@ -1,21 +1,29 @@
 #!/bin/bash
 #
-# SSH Shield - 一键部署 SSH 防暴力破解 + Bark 攻击通知
-# 用法: ./ssh-shield.sh <bark_key>
+# SSH Shield - 交互式部署 SSH 防暴力破解 + Bark 攻击通知
+# 用法: sudo ./ssh-shield.sh
 #
 set -euo pipefail
 
-BARK_KEY="${1:?用法: $0 <bark_key>}"
 BARK_API="https://api.day.app"
 SSH_KEY_PATH="/root/.ssh/id_ed25519"
 HOSTNAME=$(hostname)
-TRUSTED_IP=""
+
+# ─── 配置变量（交互填写） ───
+CFG_BARK_KEY=""
+CFG_TRUSTED_IP=""
+CFG_MAX_RETRY=3
+CFG_FIND_TIME=600
+CFG_BAN_TIME=86400
+CFG_ENABLE_UFW="y"
 
 # ─── 颜色输出 ───
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
 NC='\033[0m'
 
 info()  { echo -e "${GREEN}[✓]${NC} $1"; }
@@ -23,38 +31,153 @@ warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 fail()  { echo -e "${RED}[✗]${NC} $1"; exit 1; }
 step()  { echo -e "\n${CYAN}━━━ $1 ━━━${NC}"; }
 
+format_seconds() {
+    local s=$1
+    if (( s >= 86400 )); then
+        echo "$((s / 86400))天"
+    elif (( s >= 3600 )); then
+        echo "$((s / 3600))小时"
+    elif (( s >= 60 )); then
+        echo "$((s / 60))分钟"
+    else
+        echo "${s}秒"
+    fi
+}
+
+ask() {
+    local prompt="$1" default="$2" var="$3" display_default=""
+    [[ -n "$default" ]] && display_default=" ${DIM}[${default}]${NC}"
+    echo -ne "  ${BOLD}${prompt}${NC}${display_default}: "
+    local answer
+    read -r answer
+    [[ -z "$answer" ]] && answer="$default"
+    eval "$var=\"\$answer\""
+}
+
+ask_yn() {
+    local prompt="$1" default="$2" var="$3" display_default=""
+    [[ "$default" == "y" ]] && display_default=" ${DIM}[Y/n]${NC}" || display_default=" ${DIM}[y/N]${NC}"
+    echo -ne "  ${BOLD}${prompt}${NC}${display_default}: "
+    local answer
+    read -r answer
+    [[ -z "$answer" ]] && answer="$default"
+    case "$answer" in y|Y|yes|YES) eval "$var=\"y\"" ;; *) eval "$var=\"n\"" ;; esac
+}
+
+# ═══════════════════════════════════════════════════════════
+#  Banner
+# ═══════════════════════════════════════════════════════════
+echo ""
+echo -e "${CYAN}  ╔══════════════════════════════════════╗${NC}"
+echo -e "${CYAN}  ║          SSH Shield v1.0             ║${NC}"
+echo -e "${CYAN}  ║   SSH 防暴力破解 + Bark 攻击通知     ║${NC}"
+echo -e "${CYAN}  ╚══════════════════════════════════════╝${NC}"
+echo ""
+
 # ─── 前置检查 ───
-step "前置检查"
 [[ $EUID -ne 0 ]] && fail "请以 root 用户运行此脚本"
 command -v python3 &>/dev/null || fail "需要 python3"
-info "root 权限 ✓"
+command -v curl &>/dev/null || fail "需要 curl"
 
-# ─── 询问信任 IP ───
+# ═══════════════════════════════════════════════════════════
+#  交互式配置
+# ═══════════════════════════════════════════════════════════
+echo -e "${BOLD}请根据提示配置参数（直接回车使用默认值）${NC}"
+echo -e "${DIM}─────────────────────────────────────────${NC}"
+
+# ─── Bark 配置 ───
 echo ""
-read -rp "输入你的可信 IP（留空则不设置白名单）: " TRUSTED_IP
+echo -e "  ${CYAN}▶ Bark 通知配置${NC}"
+echo ""
+while true; do
+    ask "Bark Key（从 Bark App 获取）" "" CFG_BARK_KEY
+    [[ -n "$CFG_BARK_KEY" ]] && break
+    echo -e "  ${RED}Bark Key 不能为空${NC}"
+done
 
-# ─── 1. 测试 Bark 通知 ───
-step "测试 Bark 通知"
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${BARK_API}/${BARK_KEY}/部署开始/SSH-Shield正在部署")
-[[ "$HTTP_CODE" == "200" ]] || fail "Bark 通知测试失败 (HTTP ${HTTP_CODE})，请检查 Key 是否正确"
-info "Bark 通知可达 ✓"
+echo -ne "  测试通知连通性... "
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${BARK_API}/${CFG_BARK_KEY}/连通测试/SSH-Shield配置向导" 2>/dev/null || echo "000")
+if [[ "$HTTP_CODE" == "200" ]]; then
+    echo -e "${GREEN}成功 ✓${NC}（请检查手机是否收到测试通知）"
+else
+    fail "Bark 通知不可达 (HTTP ${HTTP_CODE})，请检查 Key"
+fi
 
-# ─── 2. 安装 fail2ban ───
-step "安装 fail2ban"
+ask "可信 IP 白名单（留空跳过）" "" CFG_TRUSTED_IP
+
+# ─── fail2ban 配置 ───
+echo ""
+echo -e "  ${CYAN}▶ fail2ban 防护参数${NC}"
+echo ""
+
+echo -e "  ${DIM}最大失败次数：触发封禁前允许的登录失败次数${NC}"
+ask "最大失败次数 (maxretry)" "3" CFG_MAX_RETRY
+CFG_MAX_RETRY=$((CFG_MAX_RETRY + 0)) 2>/dev/null || CFG_MAX_RETRY=3
+
+echo ""
+echo -e "  ${DIM}检测时间窗口：在此时间内的失败次数会被累计${NC}"
+ask "检测时间/秒 (findtime)" "600" CFG_FIND_TIME
+CFG_FIND_TIME=$((CFG_FIND_TIME + 0)) 2>/dev/null || CFG_FIND_TIME=600
+
+echo ""
+echo -e "  ${DIM}封禁时长：触发封禁后 IP 被禁止访问的时间${NC}"
+echo -e "  ${DIM}常用值：3600(1小时) 86400(1天) 604800(7天)${NC}"
+ask "封禁时长/秒 (bantime)" "86400" CFG_BAN_TIME
+CFG_BAN_TIME=$((CFG_BAN_TIME + 0)) 2>/dev/null || CFG_BAN_TIME=86400
+
+# ─── 防火墙配置 ───
+echo ""
+echo -e "  ${CYAN}▶ UFW 防火墙${NC}"
+echo ""
+if command -v ufw &>/dev/null; then
+    ask_yn "启用 UFW 防火墙（默认拒绝入站，仅开放 SSH）" "y" CFG_ENABLE_UFW
+else
+    CFG_ENABLE_UFW="n"
+    echo -e "  ${DIM}UFW 未安装，跳过${NC}"
+fi
+
+# ═══════════════════════════════════════════════════════════
+#  配置确认
+# ═══════════════════════════════════════════════════════════
+echo ""
+echo -e "${BOLD}─────────── 配置确认 ───────────${NC}"
+echo ""
+echo -e "  Bark Key:       ${GREEN}${CFG_BARK_KEY}${NC}"
+if [[ -n "$CFG_TRUSTED_IP" ]]; then
+    echo -e "  可信 IP:        ${GREEN}${CFG_TRUSTED_IP}${NC}"
+else
+    echo -e "  可信 IP:        ${DIM}未设置${NC}"
+fi
+echo -e "  最大失败次数:   ${GREEN}${CFG_MAX_RETRY} 次${NC}"
+echo -e "  检测时间窗口:   ${GREEN}$(format_seconds $CFG_FIND_TIME) (${CFG_FIND_TIME}s)${NC}"
+echo -e "  封禁时长:       ${GREEN}$(format_seconds $CFG_BAN_TIME) (${CFG_BAN_TIME}s)${NC}"
+echo -e "  UFW 防火墙:    $([ "$CFG_ENABLE_UFW" == "y" ] && echo -e "${GREEN}启用${NC}" || echo -e "${YELLOW}跳过${NC}")"
+echo ""
+
+confirm=""
+ask_yn "确认以上配置，开始部署？" "y" confirm
+[[ "$confirm" != "y" ]] && { echo "已取消"; exit 0; }
+
+# ═══════════════════════════════════════════════════════════
+#  开始部署
+# ═══════════════════════════════════════════════════════════
+
+# ─── 1. 安装 fail2ban ───
+step "1/9 安装 fail2ban"
 if command -v fail2ban-client &>/dev/null; then
     info "fail2ban 已安装，跳过"
 else
     apt-get update -qq
     apt-get install -y -qq fail2ban
-    info "fail2ban 安装完成 ✓"
+    info "fail2ban 安装完成"
 fi
 systemctl enable fail2ban
 
-# ─── 3. 部署 Bark 通知脚本 ───
-step "部署 Bark 通知脚本"
+# ─── 2. 部署 Bark 通知脚本 ───
+step "2/9 部署 Bark 通知脚本"
 cat > /usr/local/bin/bark-notify.sh << NOTIFICATION_SCRIPT
 #!/bin/bash
-BARK_KEY="${BARK_KEY}"
+BARK_KEY="${CFG_BARK_KEY}"
 BARK_URL="${BARK_API}/\${BARK_KEY}"
 
 ACTION="\$1"
@@ -73,7 +196,7 @@ case "\$ACTION" in
 尝试次数: \${ATTEMPTS}
 触发规则: \${JAIL}
 封禁时间: \${DATETIME}
-封禁时长: 24小时"
+封禁时长: $(format_seconds $CFG_BAN_TIME)"
     ;;
   unban)
     TITLE="🔓 IP解封通知 [\${HOSTNAME}]"
@@ -101,10 +224,10 @@ urllib.request.urlopen(req)
 " > /dev/null 2>&1
 NOTIFICATION_SCRIPT
 chmod +x /usr/local/bin/bark-notify.sh
-info "bark-notify.sh 已部署 ✓"
+info "bark-notify.sh 已部署"
 
-# ─── 4. 配置 fail2ban Bark action ───
-step "配置 fail2ban Bark action"
+# ─── 3. 配置 fail2ban Bark action ───
+step "3/9 配置 fail2ban Bark action"
 cat > /etc/fail2ban/action.d/bark.conf << 'FAIL2BAN_ACTION'
 [Definition]
 actionstart = /usr/local/bin/bark-notify.sh "fail2ban已启动，监控规则: <name>" "" "" "" "<name>"
@@ -116,18 +239,18 @@ actionunban = /usr/local/bin/bark-notify.sh "unban" "<ip>" "<port>" "" "<name>"
 [Init]
 port = ssh
 FAIL2BAN_ACTION
-info "fail2ban bark action 已配置 ✓"
+info "Bark action 已配置"
 
-# ─── 5. 配置 fail2ban jail ───
-step "配置 fail2ban SSH 防护规则"
+# ─── 4. 配置 fail2ban jail ───
+step "4/9 配置 fail2ban 防护规则"
 IGNORE_IP_LINE="127.0.0.1/8"
-[[ -n "$TRUSTED_IP" ]] && IGNORE_IP_LINE="127.0.0.1/8 ${TRUSTED_IP}"
+[[ -n "$CFG_TRUSTED_IP" ]] && IGNORE_IP_LINE="127.0.0.1/8 ${CFG_TRUSTED_IP}"
 
 cat > /etc/fail2ban/jail.local << JAIL_CONF
 [DEFAULT]
-bantime = 86400
-findtime = 600
-maxretry = 3
+bantime = ${CFG_BAN_TIME}
+findtime = ${CFG_FIND_TIME}
+maxretry = ${CFG_MAX_RETRY}
 ignoreip = ${IGNORE_IP_LINE}
 
 [sshd]
@@ -135,26 +258,26 @@ enabled = true
 port = ssh
 logpath = %(sshd_log)s
 backend = %(sshd_backend)s
-maxretry = 3
-bantime = 86400
+maxretry = ${CFG_MAX_RETRY}
+bantime = ${CFG_BAN_TIME}
 action = %(action_)s
          bark
 JAIL_CONF
-info "fail2ban jail 已配置（3次失败封禁24h）✓"
+info "防护规则已配置（${CFG_MAX_RETRY}次失败/$(format_seconds $CFG_FIND_TIME) → 封禁$(format_seconds $CFG_BAN_TIME)）"
 
-# ─── 6. 生成 SSH 密钥 ───
-step "生成 SSH 密钥"
+# ─── 5. 生成 SSH 密钥 ───
+step "5/9 生成 SSH 密钥"
 if [[ -f "$SSH_KEY_PATH" ]]; then
     warn "SSH 密钥已存在，跳过生成"
 else
     ssh-keygen -t ed25519 -f "$SSH_KEY_PATH" -N "" -C "root@${HOSTNAME}" -q
     cat "${SSH_KEY_PATH}.pub" >> /root/.ssh/authorized_keys
     chmod 600 /root/.ssh/authorized_keys
-    info "Ed25519 密钥对已生成 ✓"
+    info "Ed25519 密钥对已生成"
 fi
 
-# ─── 7. SSH 加固 ───
-step "SSH 安全加固"
+# ─── 6. SSH 加固 ───
+step "6/9 SSH 安全加固"
 if [[ -f /etc/ssh/sshd_config.d/49-hardening.conf ]]; then
     warn "SSH 加固配置已存在，跳过"
 else
@@ -163,56 +286,62 @@ else
 # Must load before 50-cloud-init.conf (sshd first-match-wins)
 PasswordAuthentication no
 PermitRootLogin prohibit-password
-MaxAuthTries 3
+MaxAuthTries ${CFG_MAX_RETRY}
 LoginGraceTime 30s
 MaxStartups 5:30:10
 X11Forwarding no
 SSH_HARDENING
-    info "SSH 加固配置已写入 ✓"
+    info "SSH 加固配置已写入"
 fi
 
 sshd -t || fail "SSH 配置语法错误"
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
-info "SSH 服务已重载 ✓"
+info "SSH 服务已重载"
 
-# ─── 8. 配置 UFW 防火墙 ───
-step "配置 UFW 防火墙"
-if command -v ufw &>/dev/null; then
-    ufw status | grep -q "active" && warn "UFW 已启用，跳过" || {
+# ─── 7. 配置 UFW 防火墙 ───
+step "7/9 UFW 防火墙"
+if [[ "$CFG_ENABLE_UFW" == "y" ]] && command -v ufw &>/dev/null; then
+    if ufw status | grep -q "active"; then
+        warn "UFW 已启用，跳过"
+    else
         ufw allow 22/tcp
         ufw --force enable
-        info "UFW 防火墙已启用（仅开放 SSH 22）✓"
-    }
+        info "UFW 防火墙已启用（仅开放 SSH 22）"
+    fi
 else
-    warn "UFW 未安装，跳过防火墙配置"
+    warn "跳过 UFW 配置"
 fi
 
-# ─── 9. 重启 fail2ban ───
-step "启动 fail2ban"
+# ─── 8. 重启 fail2ban ───
+step "8/9 启动 fail2ban"
 systemctl restart fail2ban
 sleep 2
-fail2ban-client status sshd 2>/dev/null | head -5
-info "fail2ban 运行中 ✓"
+info "fail2ban 运行中"
 
-# ─── 10. 发送部署完成通知 ───
-curl -s -o /dev/null "${BARK_API}/${BARK_KEY}/✅部署完成/SSH-Shield已成功部署到${HOSTNAME}" || true
+# ─── 9. 发送部署完成通知 ───
+step "9/9 发送部署完成通知"
+curl -s -o /dev/null "${BARK_API}/${CFG_BARK_KEY}/✅部署完成/SSH-Shield已成功部署到${HOSTNAME}" || true
+info "完成通知已发送"
 
-# ─── 输出结果 ───
+# ═══════════════════════════════════════════════════════════
+#  部署结果
+# ═══════════════════════════════════════════════════════════
 echo ""
 echo -e "${CYAN}╔══════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║              SSH Shield 部署完成                    ║${NC}"
+echo -e "${CYAN}║              ${BOLD}SSH Shield 部署完成${NC}${CYAN}                         ║${NC}"
 echo -e "${CYAN}╠══════════════════════════════════════════════════════╣${NC}"
 echo -e "${CYAN}║${NC} SSH 密钥: ${GREEN}${SSH_KEY_PATH}${NC}"
-echo -e "${CYAN}║${NC} 公   钥: ${GREEN}${SSH_KEY_PATH}.pub${NC}"
-echo -e "${CYAN}║${NC} 通知 Key: ${GREEN}${BARK_KEY}${NC}"
-echo -e "${CYAN}║${NC} fail2ban: ${GREEN}3次失败封禁24h${NC}"
-echo -e "${CYAN}║${NC} 密码登录: ${RED}已禁用${NC}"
+echo -e "${CYAN}║${NC} Bark Key: ${GREEN}${CFG_BARK_KEY}${NC}"
+echo -e "${CYAN}║${NC} 防护规则: ${GREEN}${CFG_MAX_RETRY}次失败/$(format_seconds $CFG_FIND_TIME) → 封禁$(format_seconds $CFG_BAN_TIME)${NC}"
+echo -e "${CYAN}║${NC} 密码登录: ${RED}已禁用（仅密钥登录）${NC}"
+echo -e "${CYAN}║${NC} UFW 防火墙: $([ "$CFG_ENABLE_UFW" == "y" ] && echo -e "${GREEN}已启用${NC}" || echo -e "${YELLOW}跳过${NC}")"
+echo -e "${CYAN}║${NC} 重启生效: ${GREEN}所有配置持久化，重启后自动生效${NC}"
 echo -e "${CYAN}╚══════════════════════════════════════════════════════╝${NC}"
 echo ""
-echo -e "${YELLOW}⚠️  请立即保存私钥到本地:${NC}"
+echo -e "${YELLOW}⚠️  请立即保存以下私钥到本地，否则将无法登录！${NC}"
 echo ""
 cat "$SSH_KEY_PATH"
 echo ""
 echo -e "${YELLOW}使用方法:${NC}"
-echo "  chmod 600 ~/your-key-file"
-echo "  ssh -i ~/your-key-file root@<服务器IP>"
+echo "  chmod 600 ~/ssh-shield-key"
+echo "  ssh -i ~/ssh-shield-key root@<服务器IP>"
