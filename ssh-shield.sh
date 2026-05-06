@@ -541,13 +541,16 @@ reconfigure_menu() {
                 echo ""
                 echo -e "  ${DIM}key = 密钥认证（更安全，推荐）${NC}"
                 echo -e "  ${DIM}password = 密码认证（保留密码登录）${NC}"
+                echo -e "  ${DIM}直接回车保持不变${NC}"
                 echo ""
                 local auth_choice=""
-                ask "登录方式 (key/password)" "${CFG_AUTH_MODE}" auth_choice
+                local old_auth_mode="${CFG_AUTH_MODE}"
+                ask "登录方式 (key/password)" "" auth_choice
+                [[ -z "$auth_choice" ]] && { echo -e "  ${DIM}未修改${NC}"; continue; }
                 case "$auth_choice" in
                     key|k) CFG_AUTH_MODE="key" ;;
                     password|p|pwd) CFG_AUTH_MODE="password" ;;
-                    *) CFG_AUTH_MODE="${CFG_AUTH_MODE}" ;;
+                    *) echo -e "  ${RED}无效输入，未修改${NC}"; continue ;;
                 esac
                 changed=true
                 ;;
